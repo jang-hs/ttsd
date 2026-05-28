@@ -1,7 +1,9 @@
 """Kokoro backend — fast, lightweight, fixed-voice TTS (no cloning).
 
-Voices ship as files in the model's voices/ dir, named like ``af_bella``:
-the first letter is the language/accent, the second the gender.
+Uses the upstream `kokoro` PyTorch package (https://github.com/hexgrad/kokoro)
+and the official `hexgrad/Kokoro-82M` weights. Voices ship as ``.pt`` files in
+``<model_dir>/voices/`` and are named like ``af_bella``: the first letter is
+the language/accent, the second the gender.
 """
 from __future__ import annotations
 
@@ -11,7 +13,9 @@ from pathlib import Path
 import numpy as np
 
 from .. import config
+from .._device import pick_device
 from ..voices import Catalog, Voice
+from ._common import resample_if_needed, to_mono_float32
 
 # Kokoro voice-prefix -> (pipeline lang token, api language code, display name)
 _LANG = {
@@ -26,6 +30,9 @@ _LANG = {
     "z": ("z", "zh", "Chinese"),
 }
 _GENDER = {"f": "Female", "m": "Male"}
+
+# Kokoro samples at 24 kHz (matches config.SAMPLE_RATE).
+_NATIVE_SR = 24000
 
 
 def _build_catalog(model_dir: Path) -> Catalog:
@@ -45,6 +52,7 @@ def _build_catalog(model_dir: Path) -> Catalog:
                 language_code=code,
                 gender=_GENDER.get(gender_letter, "Unknown"),
                 lang_code=lang_tok,
+                audio_path=str(pt),
             )
         )
     return Catalog(voices)
@@ -58,34 +66,48 @@ class KokoroBackend:
     supports_streaming = True
     sample_rate = config.SAMPLE_RATE
 
+    # ---- Extension metadata (discovered by app/cli.py + download_model.py)
+    weights_dir = "kokoro-82m-pt"
+    weights_repos: tuple = (
+        ("hexgrad/Kokoro-82M", "kokoro-82m-pt", None),
+    )
+    pip_install: tuple = (
+        ("install", "kokoro>=0.9.2"),
+    )
+
     def __init__(self) -> None:
-        self._model = None
+        self._pipelines: dict[str, object] = {}    # one KPipeline per lang token
         self._lock = threading.Lock()
-        self._model_dir = config.kokoro_model_path()
+        self._model_dir = config.LOCAL_MODELS / self.weights_dir
         self.catalog = _build_catalog(self._model_dir)
 
     def is_loaded(self) -> bool:
-        return self._model is not None
+        return bool(self._pipelines)
+
+    def _pipeline_for(self, lang_tok: str):
+        if lang_tok in self._pipelines:
+            return self._pipelines[lang_tok]
+        with self._lock:
+            if lang_tok in self._pipelines:
+                return self._pipelines[lang_tok]
+            from kokoro import KPipeline
+
+            device = pick_device()
+            pipe = KPipeline(lang_code=lang_tok, device=str(device))
+            self._pipelines[lang_tok] = pipe
+            return pipe
 
     def load(self) -> None:
-        if self._model is not None:
-            return
-        with self._lock:
-            if self._model is not None:
-                return
-            from mlx_audio.tts.utils import load_model
-
-            self._model = load_model(str(self._model_dir))
+        # Warm the default (American English) pipeline; per-language pipelines
+        # are loaded lazily on first synth call for that language.
+        self._pipeline_for("a")
 
     def synth(self, text: str, language: str, voice: Voice) -> np.ndarray:
-        if self._model is None:
-            self.load()
         lang_tok = voice.lang_code or "a"
-        result = next(
-            self._model.generate(text=text, voice=voice.voice_id, lang_code=lang_tok)
-        )
-        audio = np.asarray(result.audio, dtype=np.float32)
-        peak = float(np.abs(audio).max()) if audio.size else 0.0
-        if peak > 1.0:
-            audio = audio / peak
-        return audio
+        pipe = self._pipeline_for(lang_tok)
+        # If the catalog cached a local path to the voice .pt, pass it through
+        # so KPipeline doesn't try to re-download it from HF.
+        voice_ref = voice.audio_path or voice.voice_id
+        result = next(pipe(text, voice=voice_ref))
+        audio = to_mono_float32(result.audio)
+        return resample_if_needed(audio, _NATIVE_SR, self.sample_rate)

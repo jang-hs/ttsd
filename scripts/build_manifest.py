@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Build voices.manifest.jsonl from voice_catalog.json + voices/ directory.
 
 The catalog lists voice metadata; the voices/ dir holds the actual audio +

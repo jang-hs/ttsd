@@ -9,36 +9,42 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from . import config
+from .backends import ALL_BACKENDS
 
 logger = logging.getLogger("local-tts.registry")
 
 _BACKENDS: dict = {}
 
 
-def _try_register(make, available: bool) -> None:
+def _try_register(backend_cls, available: bool) -> None:
     if not available:
         return
     try:
-        backend = make()
+        backend = backend_cls()
         _BACKENDS[backend.id] = backend
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Skipping backend (%s): %s", make, exc)
+        logger.warning("Skipping backend %s: %s", backend_cls.__name__, exc)
+
+
+def _allowed_ids() -> set[str] | None:
+    """Optional runtime filter: TTSD_ONLY=qwen3-tts-medium,kokoro restricts
+    which backends register even when weights are present. Returns None for
+    no filter (the default)."""
+    raw = os.environ.get("TTSD_ONLY", "").strip()
+    if not raw:
+        return None
+    return {tok.strip() for tok in raw.split(",") if tok.strip()}
 
 
 def _init() -> None:
-    from .backends.omnivoice import OmniVoiceBackend
-    from .backends.kokoro import KokoroBackend
-    from .backends.chatterbox import ChatterboxBackend
-    from .backends.qwen3_tts import Qwen3TTSBackend
-    from .backends.chatterbox_multilingual import ChatterboxMultilingualBackend
-
-    _try_register(OmniVoiceBackend, config.has_local_model("OmniVoice-bf16"))
-    _try_register(KokoroBackend, config.has_local_model("Kokoro-82M-bf16"))
-    _try_register(ChatterboxBackend, config.has_local_model("chatterbox-turbo-fp16"))
-    _try_register(Qwen3TTSBackend, config.has_local_model("Qwen3-TTS-CustomVoice-8bit"))
-    _try_register(ChatterboxMultilingualBackend, config.has_local_model("Chatterbox-Multilingual-Q8"))
+    allow = _allowed_ids()
+    for cls in ALL_BACKENDS:
+        if allow is not None and cls.id not in allow:
+            continue
+        _try_register(cls, config.has_local_model(cls.weights_dir))
 
 
 _init()

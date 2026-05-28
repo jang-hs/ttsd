@@ -1,45 +1,53 @@
-# Local Voice API (self-hosted, OpenVox-compatible)
+# Local Voice API (self-hosted)
 
 Self-hosted multilingual TTS server that exposes the same `/v1` HTTP contract
-as the **OpenVox Local API** — **with no daily character limit / "Daily Power"
-quota**. All models and runtimes are open source.
+as the **OpenVox Local API** — with no daily character limit / "Daily Power"
+quota. All models and runtimes are open source.
+
+Cross-platform: runs on **macOS** (CPU/MPS), **Linux** (CPU/CUDA), and
+**Windows** (CPU/CUDA). PyTorch is the inference backbone; the device is
+selected automatically and can be forced with the `TTSD_DEVICE` env var.
 
 > ## 🤖 One-shot install via an LLM
 >
 > Paste the following prompt into Claude Code / Codex / Cursor / any coding
-> agent running on your Mac to install and start the server end-to-end.
+> agent. Works on macOS, Linux, and Windows (Git Bash / WSL).
 >
 > <details><summary><b>copy prompt</b></summary>
 >
 > ````
-> You are a coding agent on an Apple Silicon Mac. Install and run a
-> self-hosted, OpenVox-compatible local TTS server, with no daily-quota
-> limits. The repo lives at ./local-tts-server (assume current directory).
+> You are a coding agent. Install and run a self-hosted
+> local TTS server with no daily-quota limits. The repo lives at ./ttsd
+> (assume current directory).
 >
 > Requirements:
->   • Apple Silicon (MLX), Python 3.13, `uv` available on PATH.
->   • Use `uv pip` for installs (plain pip backtracks badly on 3.13).
->   • OpenVox app installed at the default path (setup.sh overlays its
->     bundled mlx-audio modules; the app itself is never launched).
->   • Pull model weights from Hugging Face (no OpenVox quota consumed).
->   • Use the public Google FLEURS dataset for reference voices (CC-BY-4.0,
->     no HF login required).
+>   • Python 3.10–3.13 with `python3` on PATH. `uv` is optional but
+>     recommended; the CLI uses it automatically when present.
+>   • For GPU acceleration on Linux/Windows, install the matching PyTorch
+>     CUDA wheel from https://pytorch.org BEFORE the steps below. macOS
+>     Apple Silicon MPS is auto-detected.
+>   • Hugging Face access for the Chatterbox weights: accept the model
+>     license on https://huggingface.co/ResembleAI/chatterbox and run
+>     `huggingface-cli login` (only needed if you install a chatterbox
+>     backend). Skip this if you only want kokoro or qwen3-tts-medium.
 >
 > Steps:
->   1. cd local-tts-server
->   2. ./setup.sh                                         # venv + deps + overlay mlx_audio
->   3. ./scripts/download_model.py                        # all 5 models from HF (~9 GB total)
->   4. ./scripts/populate_voices.py fleurs \
->        --languages en,ko,ja,zh --per-gender 2           # ~8 voices per language, with transcripts
->   5. ./run.sh --port 8001 &                             # avoids OpenVox on :8000
+>   1. cd ttsd
+>   2. ./setup.sh --with qwen3-tts-medium --yes      # core + Qwen3-TTS (default)
+>      # other choices: --with kokoro,qwen3-tts-medium  /  --with all
+>   3. python -m app.cli download                    # weights for installed backends only
+>   4. python -m scripts.populate_voices fleurs \
+>        --languages en,ko,ja,zh --per-gender 2      # ~8 voices per language (CC-BY-4.0)
+>   5. ./run.sh --port 8001 &                        # http://127.0.0.1:8001
 >   6. Verify with:
 >        curl -s http://127.0.0.1:8001/v1/health
 >        curl -s http://127.0.0.1:8001/v1/models | jq
->        VID=$(curl -s 'http://127.0.0.1:8001/v1/models/omnivoice/voices?language=en' \
+>        MODEL=qwen3-tts-medium
+>        VID=$(curl -s "http://127.0.0.1:8001/v1/models/$MODEL/voices?language=en" \
 >              | jq -r '.data[0].id')
 >        curl -s http://127.0.0.1:8001/v1/audio/speech \
 >          -H 'Content-Type: application/json' \
->          -d "{\"model\":\"omnivoice\",\"input\":\"hello from my local server\",
+>          -d "{\"model\":\"$MODEL\",\"input\":\"hello from my local server\",
 >               \"language\":\"en\",\"voice\":\"$VID\"}" --output /tmp/hi.wav
 >
 > Diagnose and fix any failure inline. Report the final /v1/models output
@@ -48,32 +56,24 @@ quota**. All models and runtimes are open source.
 >
 > </details>
 >
-> Adjust `--languages` and `--per-gender` to taste.
-
-## Why this exists
-
-OpenVox runs the same open models locally but gates usage behind a per-day
-quota that its Local API decrements on every request. The underlying weights
-(OmniVoice, Kokoro, Qwen3-TTS, Chatterbox) and the inference library
-([`mlx-audio`](https://github.com/Blaizzy/mlx-audio)) are all open source
-(Apache-2.0 / MIT), so we serve them ourselves and skip the quota.
+> Adjust `--with` (which backends), `--languages` and `--per-gender` to taste.
+> Windows users without a POSIX shell: swap `./setup.sh` for
+> `python -m app.cli setup` and `./run.sh` for `python -m app.cli run`.
 
 ## What it serves
 
 Same routes, same JSON shapes as OpenVox. Only the models whose weights are
 present locally are registered, so `/v1/models` reflects reality.
 
-| Model id | Backend | Languages | Voice handling |
+| Model id | Upstream weights | Languages | Voice handling |
 |---|---|---|---|
-| `omnivoice` | Qwen3-0.6B + HiggsAudio (masked diffusion) | 49 | zero-shot cloning from reference clip |
-| `kokoro` | fast small (82M) | 9 | fixed voices (ships with model) |
-| `qwen3-tts-medium` | Qwen3-1.7B CustomVoice (8-bit) | 10 | 9 built-in speakers, auto-picked by (lang, gender) |
-| `chatterbox-turbo-large` | autoregressive English (fp16) | 1 (en) | zero-shot cloning |
-| `chatterbox-multilingual-medium` | autoregressive multilingual (Q8) | 25 | zero-shot cloning |
+| `kokoro` | `hexgrad/Kokoro-82M` | 9 | fixed voices (ship with the model) |
+| `chatterbox-turbo-large` | `ResembleAI/chatterbox` (English) | 1 (en) | zero-shot cloning |
+| `chatterbox-multilingual-medium` | `ResembleAI/chatterbox` (multilingual files) | 25 | zero-shot cloning |
+| `qwen3-tts-medium` | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | 10 | 9 built-in speakers, auto-picked by (lang, gender) |
 
 Voice counts per model depend on which voices you've populated — see
-"Providing voices" below. For FLEURS at `--per-gender 2` you get roughly
-`4 × (#languages-the-model-supports)` voices.
+"Providing voices" below.
 
 Routes:
 
@@ -90,55 +90,108 @@ Routes:
 Only one generation/preload runs at a time; concurrent requests get **HTTP 429**
 (matching OpenVox).
 
+## Requirements
+
+- Python 3.10 – 3.13 (3.13 recommended).
+- ~3–10 GB of disk per model.
+- For GPU acceleration on Linux/Windows, install the matching PyTorch CUDA
+  wheel from https://pytorch.org *before* `pip install -r requirements.txt`.
+  On Apple Silicon, MPS is detected automatically.
+- A Hugging Face account is needed for the Chatterbox weights (the
+  `ResembleAI/chatterbox` repo is license-gated). Run `huggingface-cli login`
+  once after accepting the model license on the repo page.
+- [`uv`](https://github.com/astral-sh/uv) is optional but recommended — the
+  CLI uses it automatically when present, otherwise falls back to `pip`.
+
 ## Setup
 
-Requires Apple Silicon (MLX), Python 3.13, and a local **OpenVox** install.
-[`uv`](https://github.com/astral-sh/uv) is strongly recommended — plain pip
-backtracks badly on this dependency set under 3.13.
+### macOS / Linux / Windows (Git Bash or WSL)
 
-> **Why OpenVox?** PyPI's `mlx-audio 0.2.10` ships only a subset of TTS
-> modules. `setup.sh` overlays the full package (omnivoice, qwen3_tts,
-> chatterbox, higgs_audio codec) from the OpenVox app bundle — the same
-> Apache-2.0 mlx-audio source, just not yet published to PyPI. The app itself
-> is not launched; only the bundled Python modules are used.
->
-> `download_model.py` pulls weights from Hugging Face directly and reuses the
-> OpenVox HF cache as a fast-path if present, so no quota is consumed during
-> setup.
-
-### First-time setup (4 steps)
+`setup.sh` / `run.sh` detect the venv layout automatically (`.venv/bin/` on
+POSIX, `.venv/Scripts/` on Windows), so the same scripts work on all three
+OSes as long as you have a POSIX shell. Git Bash ships with Git for Windows.
 
 ```bash
-./setup.sh                                                              # 1. venv + deps
-./scripts/download_model.py                                             # 2. download model weights (~5 GB)
-
-# 3. provide voices — pick ONE:
-./scripts/populate_voices.py fleurs --languages en,ko --per-gender 2   #    A. public dataset (FLEURS, no login needed)
-./scripts/populate_voices.py dir --path ./my_clips                      #    B. your own clips
-
-./run.sh                                                                # 4. start server on :8000
+./setup.sh              # interactive — pick which backends to install
+./setup.sh --with kokoro,qwen3-tts-medium --yes   # non-interactive
+./setup.sh --with all --yes                       # install every backend
 ```
 
-Steps 2 and 3 each create files the next step needs:
+The interactive prompt looks like:
 
-| Step | What it creates |
-|------|------|
-| `scripts/download_model.py` | `models/OmniVoice-bf16/`, `models/OmniVoice/`, `models/Kokoro-82M-bf16/`, `models/chatterbox-turbo-fp16/`, `models/Qwen3-TTS-CustomVoice-8bit/`, `models/Chatterbox-Multilingual-Q8/` |
-| voice step (A or B) | `voices/`, `voice_catalog.json`, `voices.manifest.jsonl` |
+```
+==> ttsd setup
 
-`scripts/download_model.py` pulls weights from Hugging Face into `models/`. Use
-`./scripts/download_model.py --list` to see known model keys, or `kokoro` /
-`omnivoice` / `chatterbox` to fetch one at a time.
+Choose which TTS backends to install:
 
-> **You can run the server before step 3** — it just won't have cloning
-> backends. Kokoro works immediately (its voices ship with the model);
-> OmniVoice and Chatterbox auto-register once you've populated voices and
-> restarted.
+  1) kokoro                          Kokoro
+  2) chatterbox-turbo-large          Chatterbox Turbo (Large)
+  3) chatterbox-multilingual-medium  Chatterbox Multilingual (Medium)
+  4) qwen3-tts-medium                Qwen3 TTS (Medium)  (default)
+
+Enter comma-separated numbers or ids, 'all', or just Enter for default.
+>
+```
+
+Default is `qwen3-tts-medium` (covers 10 languages with built-in speakers).
+You can also preselect via the `TTSD_BACKENDS=qwen3-tts-medium,kokoro` env
+var, which is useful in Docker / Make / CI contexts.
+
+After setup, download weights + voices + run the server:
+
+```bash
+python -m app.cli download                                              # downloads weights for installed backends only
+python -m scripts.populate_voices fleurs --languages en,ko --per-gender 2
+./run.sh                                                                # http://127.0.0.1:8000
+```
+
+### Windows (cmd.exe / PowerShell, no POSIX shell)
+
+If you don't want to install Git Bash / WSL, run the same steps directly
+with the Windows-native commands:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m app.cli setup
+.\.venv\Scripts\python.exe -m app.cli download
+.\.venv\Scripts\python.exe -m scripts.populate_voices fleurs --languages en,ko --per-gender 2
+.\.venv\Scripts\python.exe -m app.cli run --port 8000
+```
+
+### Manual
+
+The shell scripts only create a venv and call `python -m app.cli` — you can
+do the same by hand:
+
+```bash
+python -m venv .venv
+# macOS/Linux:
+source .venv/bin/activate
+# Windows:
+# .\.venv\Scripts\Activate.ps1
+
+pip install -r requirements.txt
+python -m app.cli setup-backends qwen3-tts-medium
+python -m app.cli download qwen3-tts-medium
+python -m scripts.populate_voices fleurs --languages en,ko --per-gender 2
+python -m app.cli run --port 8000
+```
+
+The CLI commands:
+
+| Command | Purpose |
+|---|---|
+| `python -m app.cli setup [--with ids] [--yes]` | install core + selected backend packages |
+| `python -m app.cli setup-backends [ids ...]` | install per-backend packages only |
+| `python -m app.cli download [ids ...]` | download HF weights into `models/` |
+| `python -m app.cli populate <fleurs|dir> …` | run `scripts.populate_voices` |
+| `python -m app.cli run [--port N] [--only ids]` | start uvicorn |
+| `python -m scripts.download_model --list` | list known backends + their HF repos |
 
 ## Providing voices
 
-OmniVoice and Chatterbox clone from a reference clip per voice, so the server
-needs a `voices/` directory + `voice_catalog.json`. Two ways to fill them:
+The cloning backends (Chatterbox + Chatterbox Multilingual) need a `voices/`
+directory + `voice_catalog.json`. Two ways to fill them:
 
 ### A. Download from a public dataset (Google FLEURS)
 
@@ -146,8 +199,8 @@ FLEURS (Google, CC-BY-4.0, 102 languages, per-clip gender labels) is **not
 gated** — no Hugging Face login required.
 
 ```bash
-./scripts/populate_voices.py fleurs --languages en,ko,ja,zh --per-gender 2
-./scripts/populate_voices.py fleurs --languages en --per-gender 5 --split test
+python -m scripts.populate_voices fleurs --languages en,ko,ja,zh --per-gender 2
+python -m scripts.populate_voices fleurs --languages en --per-gender 5 --split test
 ```
 
 For each language you get `per-gender × 2` voices (male + female), each a
@@ -157,9 +210,8 @@ codes (`en`, `ko`, `ja`) or full FLEURS codes (`en_us`, `ko_kr`,
 `cmn_hans_cn`).
 
 > **Common Voice is currently broken on Hugging Face**: Mozilla's repo uses
-> a legacy loading script that newer `datasets` versions refuse to run. The
-> `common-voice` subcommand is kept for when that's resolved, but FLEURS is
-> the working path today.
+> a legacy loading script that newer `datasets` versions refuse to run. Use
+> FLEURS instead until that's resolved.
 
 ### B. Bring your own clips
 
@@ -179,26 +231,19 @@ my_clips/
 ```
 
 ```bash
-./scripts/populate_voices.py dir --path ./my_clips
+python -m scripts.populate_voices dir --path ./my_clips
 ```
 
-Clips become voices keyed `<Language>-<Gender>-<Name>`. Transcript is optional
-but improves OmniVoice cloning quality. Languages are matched against an ISO
-table (`English`→`en`, `Korean`→`ko`, …); unknown names fall back to a
-lowercased folder name as the code.
+Clips become voices keyed `<Language>-<Gender>-<Name>`. Transcripts are
+optional but improve cloning quality on backends that accept them.
 
 ### Manual procedure (no scripts)
 
-If you'd rather wire things up by hand:
-
-1. **Drop audio files** into `voices/<Language>/<Gender>/<Name>.<ext>` (mp3,
-   wav, flac, ogg, m4a all work). Example:
-   `voices/English/Female/Alice.wav`.
-2. **(Optional) Drop a transcript** next to the audio as
-   `<file>.qwen.txt` (or `<file>.txt`, or same stem `.txt`). Transcripts are
-   only needed for OmniVoice quality; Chatterbox ignores them.
-3. **Write a catalog row** in `voice_catalog.json` (a JSON array). One object
-   per voice:
+1. Drop audio files into `voices/<Language>/<Gender>/<Name>.<ext>` (mp3,
+   wav, flac, ogg, m4a all work).
+2. (Optional) Drop a transcript next to the audio as `<file>.qwen.txt`
+   (or `<file>.txt`).
+3. Write a catalog row in `voice_catalog.json`:
    ```json
    {
      "id": "English-Female-Alice",
@@ -210,56 +255,80 @@ If you'd rather wire things up by hand:
      "tags": []
    }
    ```
-   The `id` must follow `Language-Gender-Name`; `language_code` is the BCP-47
-   tag the backend feeds the model (e.g. `en`, `arb`, `zh`, `ja`).
-4. **Rebuild the runtime manifest**:
+4. Rebuild the runtime manifest:
    ```bash
-   ./scripts/build_manifest.py          # joins voice_catalog.json + voices/ → voices.manifest.jsonl
-   ./scripts/build_manifest.py --strict # exit non-zero if any catalog entry has no audio
+   python -m scripts.build_manifest          # voice_catalog.json + voices/ -> voices.manifest.jsonl
+   python -m scripts.build_manifest --strict # fail when any catalog entry has no audio
    ```
-5. **Restart the server.** It picks up the new manifest at startup; new voices
-   appear immediately in `/v1/models/{model}/voices`.
+5. Restart the server.
 
-## Adding more compatible models
+## Adding a new TTS model
 
-mlx-audio (the underlying library) supports many other TTS architectures. To
-add one:
+The backend registry is **self-describing**. To add a new model:
 
-1. Pick a model. The installed `mlx-audio` ships these modules:
-   `kokoro`, `omnivoice`, `chatterbox`, `chatterbox_turbo`, `qwen3`, `qwen3_tts`,
-   `bark`, `dia`, `indextts`, `outetts`, `sesame`, `soprano`, `spark`,
-   `vibevoice`, `voxcpm`, `llama`. Find a matching MLX checkpoint on Hugging
-   Face (e.g. `mlx-community/*`, `theoracleguy/*`).
-2. Register it in `scripts/download_model.py` — add an entry to `REGISTRY`:
+1. Create `app/backends/<my_model>.py` with a class that implements the
+   `TTSBackend` Protocol (see `app/backends/base.py`) and the extension
+   metadata used by the CLI + downloader:
+
    ```python
-   "my_model": [("mlx-community/Some-TTS-mlx-fp16", "Some-TTS-mlx-fp16")],
-   ```
-3. `./scripts/download_model.py my_model` to fetch it.
-4. Write a small backend in `app/backends/`, modeled after `kokoro.py` (fixed
-   voices) or `omnivoice.py` (cloning). Three things to provide:
-   - `id / display_name / model_key / supports_streaming / sample_rate`
-   - a `Catalog` of voices the API will expose
-   - a `synth(text, language, voice) -> np.ndarray` method
-5. Register it in `app/registry.py` next to the existing `_try_register(...)`
-   lines, gated on `config.has_local_model("<dir-name>")`.
+   from .. import config
+   from .._device import pick_device
+   from ..voices import Catalog, Voice
+   from ._common import resample_if_needed, to_mono_float32
 
-The same JSON shape is reused for every backend, so existing clients keep
-working — the only thing that changes is which `id` they request.
+   class MyModelBackend:
+       id = "my-model"
+       display_name = "My Model"
+       model_key = "my_model"
+       voice_model_label = "my_model"
+       supports_streaming = True
+       sample_rate = config.SAMPLE_RATE
+
+       # ---- Extension metadata
+       weights_dir = "my-model-pt"
+       weights_repos = (
+           ("some-org/My-Model", "my-model-pt", None),
+       )
+       pip_install = (
+           ("install", "my-model-tts>=0.1"),
+       )
+
+       def __init__(self): ...
+       def is_loaded(self) -> bool: ...
+       def load(self) -> None: ...
+       def synth(self, text, language, voice) -> np.ndarray: ...
+   ```
+
+2. Append it to `ALL_BACKENDS` in `app/backends/__init__.py`:
+
+   ```python
+   from .my_model import MyModelBackend
+   ALL_BACKENDS = (..., MyModelBackend)
+   ```
+
+Done. `app.registry` registers it automatically when its weights are present;
+`app.cli` exposes it in the interactive prompt and `--with`; the downloader
+discovers its repo via `weights_repos`; no edits required in `app/main.py`,
+`scripts/download_model.py`, or anywhere else.
 
 ## Running
 
 ```bash
-./run.sh                  # binds 127.0.0.1:8000
-./run.sh --port 8001      # OpenVox is on 8000 by default; use another port to coexist
+./run.sh                                   # macOS/Linux, binds 127.0.0.1:8000
+.\run.sh                                   # Windows (Git Bash)
+./run.sh --port 8001                       # different port (OpenVox uses 8000 by default)
+python -m app.cli run --port 8001 --reload # dev autoreload
+python -m app.cli run --only kokoro        # restrict /v1/models to a subset
+TTSD_ONLY=kokoro,qwen3-tts-medium ./run.sh # same, via env
 ```
 
 Example request (replace `<voice-id>` with one you actually have — see
-`GET /v1/models/omnivoice/voices?language=en`):
+`GET /v1/models/<model>/voices?language=en`):
 
 ```bash
 curl http://127.0.0.1:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"model":"omnivoice","input":"Hello from my own server.",
+  -d '{"model":"qwen3-tts-medium","input":"Hello from my own server.",
        "language":"en","voice":"<voice-id>","response_format":"wav"}' \
   --output speech.wav
 ```
@@ -267,46 +336,42 @@ curl http://127.0.0.1:8000/v1/audio/speech \
 ## Browser / Obsidian clients (CORS)
 
 CORS is enabled for all origins, so browser-based callers (Obsidian's
-`app://obsidian.md`, Electron apps, web pages) work — including the preflight
-`OPTIONS` request. Note that **OpenVox's own server on :8000 does not send CORS
-headers**, so for browser clients you must run *this* server (quit OpenVox and
-use `./run.sh` on :8000, or point the client at the port this server uses).
+`app://obsidian.md`, Electron apps, web pages) can call the API directly —
+including the preflight `OPTIONS` request. The exposed response headers
+include `X-OpenVox-Model` and `X-OpenVox-Voice` so client code can read which
+backend / voice handled the request.
 
 ## How it works
 
-- **Weights**: live in `models/` (`OmniVoice-bf16` LLM + `OmniVoice` full
-  encode+decode HiggsAudio tokenizer, plus optional Kokoro / Chatterbox).
-  `scripts/download_model.py` fetches them from Hugging Face. `models/` is
-  git-ignored (~5 GB+).
+- **Weights**: live in `models/`. `python -m app.cli download` fetches them
+  from the upstream originator orgs on Hugging Face (hexgrad, Resemble AI,
+  Qwen). `models/` is git-ignored.
 - **Voices**: `voices.manifest.jsonl` is the runtime index, built from
-  `voice_catalog.json` (metadata) joined with `voices/<Language>/<Gender>/<Name>.<ext>`
-  (reference clip) and `<file>.qwen.txt` (transcript). For OmniVoice and
-  Chatterbox, synthesis is zero-shot cloning from the reference clip.
-- **Duration**: auto-estimated from the input text (OmniVoice's rule
-  estimator) — clients don't need to specify it.
+  `voice_catalog.json` (metadata) joined with
+  `voices/<Language>/<Gender>/<Name>.<ext>` (reference clip) and
+  `<file>.qwen.txt` (transcript). For cloning backends, synthesis is
+  zero-shot from the reference clip.
+- **Lazy load**: every backend stays on disk until its first request. The
+  HTTP layer only registers backends whose weights are present; even
+  registered backends don't touch RAM/VRAM until you POST to
+  `/v1/audio/speech` for them.
 - **Concurrency**: one generation or preload at a time; concurrent requests
-  get HTTP 429 (matching OpenVox).
+  get HTTP 429.
+- **Device**: PyTorch device selection is automatic (CUDA → MPS → CPU);
+  override via `TTSD_DEVICE`.
 
 ## Tuning (env vars)
 
 | Var | Default | Meaning |
 |-----|---------|---------|
-| `OMNIVOICE_NUM_STEPS` | `16` | diffusion steps; higher = better/slower |
-| `OMNIVOICE_GUIDANCE_SCALE` | `2.0` | CFG strength |
+| `TTSD_DEVICE` | auto | Force a PyTorch device (`cpu`, `cuda`, `cuda:0`, `mps`) |
+| `TTSD_BACKENDS` | (none) | Setup-time preselection; comma-separated backend ids |
+| `TTSD_ONLY` | (none) | Runtime filter; only listed backends register / appear in `/v1/models` |
 
 ## Licensing
 
-The server code in this repo, the underlying models (OmniVoice, Kokoro,
-Chatterbox), and the inference library (`mlx-audio`) are all open source
-(Apache-2.0 / MIT). The repo does **not** include OpenVox's proprietary
-application code.
-
-Reference voice clips depend on which path you populated voices with:
-
-| Path | Source | License |
-|------|--------|---------|
-| A. FLEURS | Google FLEURS via Hugging Face | CC-BY-4.0 (attribution required for redistribution) |
-| B. Bring your own | whatever you supplied | your own |
+Server code: open source. Models and voices follow their originators' licenses
+— check each Hugging Face model card / dataset card before redistributing.
 
 `.gitignore` excludes `voices/`, `voice_catalog.json`, and
-`voices.manifest.jsonl` so the repo stays clean to share regardless of path.
+`voices.manifest.jsonl`.

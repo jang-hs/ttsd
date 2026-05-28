@@ -1,8 +1,10 @@
 """Chatterbox Multilingual backend — 25-language cloning TTS.
 
-Uses the mlx-audio `chatterbox` module (the multilingual variant, distinct from
-`chatterbox_turbo`). Reuses the OmniVoice reference clips, filtered to the
-25 languages Chatterbox Multilingual actually supports.
+Uses the official `chatterbox-tts` package's `ChatterboxMultilingualTTS` class
+and weights from the upstream `ResembleAI/chatterbox` repo (the multilingual
+variant shares the repo with the English variant; only the t3_mtl* weights
+and a different tokenizer are loaded). Reuses the shared reference-clip pool,
+filtered to the languages Chatterbox Multilingual actually supports.
 """
 from __future__ import annotations
 
@@ -11,7 +13,9 @@ import threading
 import numpy as np
 
 from .. import config, voices
+from .._device import pick_device
 from ..voices import Catalog, Voice
+from ._common import resample_if_needed, to_mono_float32
 
 SUPPORTED_LANGS = {
     "ar", "cs", "da", "de", "el", "en", "es", "fi", "fr", "he",
@@ -19,9 +23,11 @@ SUPPORTED_LANGS = {
     "sv", "sw", "th", "tr", "zh",
 }
 
+_NATIVE_SR = 24000
+
 
 def _catalog() -> Catalog:
-    base = voices.load_omnivoice_catalog()
+    base = voices.load_voice_catalog()
     out: list[Voice] = []
     for v in base.all():
         if v.language_code not in SUPPORTED_LANGS:
@@ -43,15 +49,29 @@ def _catalog() -> Catalog:
 class ChatterboxMultilingualBackend:
     id = "chatterbox-multilingual-medium"
     display_name = "Chatterbox Multilingual (Medium)"
-    model_key = "chatterbox_multilingual_q8"
-    voice_model_label = "chatterbox_multilingual_q8"
+    model_key = "chatterbox_multilingual"
+    voice_model_label = "chatterbox_multilingual"
     supports_streaming = True
     sample_rate = config.SAMPLE_RATE
+
+    # ---- Extension metadata. Shares the chatterbox-tts package with the
+    # English ChatterboxBackend, so pip_install is empty (pulled in by that
+    # backend); the multilingual variant uses a different file set from the
+    # same ResembleAI/chatterbox repo.
+    weights_dir = "chatterbox-multilingual-pt"
+    weights_repos: tuple = (
+        ("ResembleAI/chatterbox", "chatterbox-multilingual-pt",
+         ("ve.pt", "s3gen.pt",
+          "t3_mtl23ls_v2.safetensors", "t3_mtl23ls_v3.safetensors",
+          "mtl_tokenizer.json", "grapheme_mtl_merged_expanded_v1.json",
+          "conds.pt", "Cangjie5_TC.json")),
+    )
+    pip_install: tuple = ()
 
     def __init__(self) -> None:
         self._model = None
         self._lock = threading.Lock()
-        self._model_dir = config.chatterbox_multilingual_model_path()
+        self._model_dir = config.LOCAL_MODELS / self.weights_dir
         self.catalog = _catalog()
 
     def is_loaded(self) -> bool:
@@ -63,20 +83,22 @@ class ChatterboxMultilingualBackend:
         with self._lock:
             if self._model is not None:
                 return
-            from mlx_audio.tts.utils import load_model
+            from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
-            self._model = load_model(str(self._model_dir))
+            device = pick_device()
+            loader = getattr(ChatterboxMultilingualTTS, "from_local", None)
+            if loader is not None and self._model_dir.is_dir():
+                self._model = loader(str(self._model_dir), device=str(device))
+            else:
+                self._model = ChatterboxMultilingualTTS.from_pretrained(device=str(device))
 
     def synth(self, text: str, language: str, voice: Voice) -> np.ndarray:
         if self._model is None:
             self.load()
-        result = next(self._model.generate(
-            text=text,
-            ref_audio=voice.audio_path,
-            lang_code=language or "en",
-        ))
-        audio = np.asarray(result.audio, dtype=np.float32)
-        peak = float(np.abs(audio).max()) if audio.size else 0.0
-        if peak > 1.0:
-            audio = audio / peak
-        return audio
+        kwargs: dict[str, object] = {"language_id": language or "en"}
+        if voice.audio_path:
+            kwargs["audio_prompt_path"] = voice.audio_path
+        wav = self._model.generate(text, **kwargs)
+        audio = to_mono_float32(wav)
+        src_sr = int(getattr(self._model, "sr", _NATIVE_SR))
+        return resample_if_needed(audio, src_sr, self.sample_rate)

@@ -1,8 +1,9 @@
-"""Qwen3-TTS backend — Qwen3-1.7B based TTS with voice cloning.
+"""Qwen3-TTS backend — Qwen3-1.7B based TTS with built-in speakers.
 
-Mirrors OpenVox's `qwen3-tts-medium` model (8-bit). Voice ids are namespaced
-with a ``qwen-`` prefix to avoid collisions with the OmniVoice catalog (the
-two backends draw from the same set of reference clips).
+Uses Alibaba Qwen's official `qwen-tts` PyTorch package and the
+`Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` weights. Voice ids are namespaced with
+a ``qwen-`` prefix to avoid collisions with other backends that draw from the
+same reference-clip pool.
 """
 from __future__ import annotations
 
@@ -11,32 +12,35 @@ import threading
 import numpy as np
 
 from .. import config, voices
+from .._device import pick_device, pick_dtype
 from ..voices import Catalog, Voice
+from ._common import resample_if_needed, to_mono_float32
 
-# Qwen3-TTS-Medium exposes 10 languages in OpenVox.
+# Qwen3-TTS-CustomVoice exposes 10 languages.
 SUPPORTED_LANGS = {"de", "en", "es", "fr", "it", "ja", "ko", "pt", "ru", "zh"}
 EXTRA_TAGS = ("Library",)  # OpenVox marks the curated set as "Library"
 
-# Qwen3-TTS CustomVoice (8-bit) ships 9 built-in speakers. The full OpenVox-
-# style voice catalog (one entry per reference clip) is exposed for parity, but
-# at synth time we deterministically map (language, gender) -> a built-in
-# speaker that actually exists in the checkpoint.
+# Qwen3-TTS CustomVoice ships 9 built-in speakers (Vivian, Serena, Uncle_Fu,
+# Dylan, Eric, Ryan, Aiden, Ono_Anna, Sohee). At synth time we deterministically
+# map (language, gender) -> one that actually exists in the checkpoint, matching
+# the prior MLX-era selection so client voice routing keeps the same outcome.
 _SPEAKER_BY_LANG_GENDER: dict[tuple[str, str], str] = {
-    ("zh", "Male"):   "uncle_fu",
-    ("ja", "Female"): "ono_anna",
-    ("ko", "Female"): "sohee",
-    ("en", "Female"): "serena",
-    ("en", "Male"):   "ryan",
+    ("zh", "Male"):   "Uncle_Fu",
+    ("ja", "Female"): "Ono_Anna",
+    ("ko", "Female"): "Sohee",
+    ("en", "Female"): "Serena",
+    ("en", "Male"):   "Ryan",
 }
-_FEMALE_FALLBACK = "vivian"
-_MALE_FALLBACK = "dylan"
+_FEMALE_FALLBACK = "Vivian"
+_MALE_FALLBACK = "Dylan"
 
-# BCP-47 -> Qwen3-TTS language name (the model accepts long names or "auto").
+# BCP-47 -> Qwen3-TTS language name. The model accepts capitalised names or
+# "Auto" for automatic detection.
 _LANG_NAME = {
-    "de": "german",   "en": "english",  "es": "spanish",
-    "fr": "french",   "it": "italian",  "ja": "japanese",
-    "ko": "korean",   "pt": "portuguese", "ru": "russian",
-    "zh": "chinese",
+    "de": "German",   "en": "English",   "es": "Spanish",
+    "fr": "French",   "it": "Italian",   "ja": "Japanese",
+    "ko": "Korean",   "pt": "Portuguese", "ru": "Russian",
+    "zh": "Chinese",
 }
 
 
@@ -47,7 +51,7 @@ def _pick_speaker(language_code: str, gender: str) -> str:
 
 
 def _catalog() -> Catalog:
-    base = voices.load_omnivoice_catalog()
+    base = voices.load_voice_catalog()
     out: list[Voice] = []
     for v in base.all():
         if v.language_code not in SUPPORTED_LANGS:
@@ -69,15 +73,25 @@ def _catalog() -> Catalog:
 class Qwen3TTSBackend:
     id = "qwen3-tts-medium"
     display_name = "Qwen3 TTS (Medium)"
-    model_key = "qwen3_tts_8bit"
+    model_key = "qwen3_tts"
     voice_model_label = "qwen3_tts"
     supports_streaming = True
     sample_rate = config.SAMPLE_RATE
 
+    # ---- Extension metadata
+    weights_dir = "qwen3-tts-pt"
+    weights_repos: tuple = (
+        ("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", "qwen3-tts-pt", None),
+    )
+    pip_install: tuple = (
+        ("install", "qwen-tts>=0.1.1"),
+    )
+
     def __init__(self) -> None:
         self._model = None
+        self._sr: int | None = None
         self._lock = threading.Lock()
-        self._model_dir = config.qwen3_tts_model_path()
+        self._model_dir = config.LOCAL_MODELS / self.weights_dir
         self.catalog = _catalog()
 
     def is_loaded(self) -> bool:
@@ -89,21 +103,34 @@ class Qwen3TTSBackend:
         with self._lock:
             if self._model is not None:
                 return
-            from mlx_audio.tts.utils import load_model
+            from qwen_tts import Qwen3TTSModel
 
-            self._model = load_model(str(self._model_dir))
+            device = pick_device()
+            dtype = pick_dtype()
+            # Prefer the locally downloaded weights when present; fall back to
+            # the canonical HF repo id so callers can run without
+            # pre-downloading.
+            source = (
+                str(self._model_dir)
+                if self._model_dir.is_dir()
+                else "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
+            )
+            self._model = Qwen3TTSModel.from_pretrained(
+                source,
+                device_map=str(device),
+                dtype=dtype,
+            )
 
     def synth(self, text: str, language: str, voice: Voice) -> np.ndarray:
         if self._model is None:
             self.load()
         speaker = _pick_speaker(voice.language_code, voice.gender)
-        result = next(self._model.generate(
+        wavs, sr = self._model.generate_custom_voice(
             text=text,
-            voice=speaker,
-            lang_code=_LANG_NAME.get(language, "auto"),
-        ))
-        audio = np.asarray(result.audio, dtype=np.float32)
-        peak = float(np.abs(audio).max()) if audio.size else 0.0
-        if peak > 1.0:
-            audio = audio / peak
-        return audio
+            speaker=speaker,
+            language=_LANG_NAME.get(language, "Auto"),
+        )
+        # generate_custom_voice returns (List[np.ndarray], int).
+        first = wavs[0] if isinstance(wavs, (list, tuple)) else wavs
+        audio = to_mono_float32(first)
+        return resample_if_needed(audio, int(sr), self.sample_rate)

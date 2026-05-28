@@ -1,8 +1,8 @@
 """Voice + language catalog primitives, shared across backends.
 
-Each backend builds a Catalog: OmniVoice from voices.manifest.jsonl, Kokoro from
-its bundled voice files. The API layer queries the catalog uniformly.
-"""
+Each backend builds a Catalog: cloning backends from voices.manifest.jsonl,
+Kokoro from its bundled voice files. The API layer queries the catalog
+uniformly."""
 from __future__ import annotations
 
 import json
@@ -69,9 +69,17 @@ class Catalog:
 
 
 @lru_cache(maxsize=1)
-def load_omnivoice_catalog() -> Catalog:
-    """Catalog from voices.manifest.jsonl (OpenVox-mirrored ids + tags + ref clips)."""
+def load_voice_catalog() -> Catalog:
+    """Catalog from voices.manifest.jsonl.
+
+    Shared by every cloning backend (Chatterbox, Chatterbox-Multilingual, …)
+    so they all draw voices from the same per-language reference clip pool.
+    Returns an empty catalog when the manifest is missing — backends still
+    register, they just expose zero voices until the user runs
+    `scripts.populate_voices`."""
     voices: list[Voice] = []
+    if not config.VOICES_MANIFEST.is_file():
+        return Catalog(voices)
     with open(config.VOICES_MANIFEST, encoding="utf-8") as f:
         for line in f:
             line = line.strip()

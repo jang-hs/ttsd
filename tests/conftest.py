@@ -31,10 +31,10 @@ def en_voice() -> Voice:
 def mock_backend(en_voice: Voice) -> MagicMock:
     catalog = Catalog([en_voice])
     backend = MagicMock()
-    backend.id = "omnivoice"
-    backend.display_name = "OmniVoice"
-    backend.model_key = "omnivoice"
-    backend.voice_model_label = "omnivoice"
+    backend.id = "qwen3-tts-medium"
+    backend.display_name = "Qwen3 TTS (Medium)"
+    backend.model_key = "qwen3_tts"
+    backend.voice_model_label = "qwen3_tts"
     backend.supports_streaming = True
     backend.sample_rate = 24000
     backend.catalog = catalog
@@ -44,7 +44,7 @@ def mock_backend(en_voice: Voice) -> MagicMock:
 
 @pytest.fixture(autouse=True)
 def patch_registry(mock_backend: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(registry, "_BACKENDS", {"omnivoice": mock_backend})
+    monkeypatch.setattr(registry, "_BACKENDS", {mock_backend.id: mock_backend})
 
 
 @pytest.fixture

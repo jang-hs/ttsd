@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Populate voices/ and voice_catalog.json from a public dataset or a local dir.
 
 Sources:
@@ -34,8 +34,8 @@ import sys
 from pathlib import Path
 
 # ISO 639-1/2 lang code -> human-readable language name (for catalog display).
-# We keep the API-facing language_code identical to the source code (so OmniVoice
-# gets the BCP-47 tag it expects).
+# We keep the API-facing language_code identical to the source code (so the
+# cloning backends get the BCP-47 tag they expect).
 LANG_NAME = {
     "en": "English", "ko": "Korean", "ja": "Japanese", "zh": "Chinese",
     "zh-CN": "Chinese", "es": "Spanish", "fr": "French", "de": "German",

@@ -26,7 +26,7 @@ def test_list_models(client: TestClient) -> None:
     assert body["object"] == "list"
     assert len(body["data"]) == 1
     m = body["data"][0]
-    assert m["id"] == "omnivoice"
+    assert m["id"] == "qwen3-tts-medium"
     assert m["supports_streaming"] is True
     assert m["voice_count"] == 1
 
@@ -41,11 +41,11 @@ def test_model_not_found_returns_500(client: TestClient) -> None:
 
 # ------------------------------------------------------------------ languages
 def test_list_languages(client: TestClient) -> None:
-    r = client.get("/v1/models/omnivoice/languages")
+    r = client.get("/v1/models/qwen3-tts-medium/languages")
     assert r.status_code == 200
     body = r.json()
     assert body["object"] == "list"
-    assert body["model"] == "omnivoice"
+    assert body["model"] == "qwen3-tts-medium"
     langs = body["data"]
     assert len(langs) == 1
     assert langs[0]["id"] == "en"
@@ -55,7 +55,7 @@ def test_list_languages(client: TestClient) -> None:
 
 # ------------------------------------------------------------------ voices
 def test_list_voices(client: TestClient) -> None:
-    r = client.get("/v1/models/omnivoice/voices?language=en")
+    r = client.get("/v1/models/qwen3-tts-medium/voices?language=en")
     assert r.status_code == 200
     body = r.json()
     assert body["object"] == "list"
@@ -70,23 +70,23 @@ def test_list_voices(client: TestClient) -> None:
 
 
 def test_list_voices_unknown_language_returns_empty(client: TestClient) -> None:
-    r = client.get("/v1/models/omnivoice/voices?language=xx")
+    r = client.get("/v1/models/qwen3-tts-medium/voices?language=xx")
     assert r.status_code == 200
     assert r.json()["data"] == []
 
 
 def test_list_voices_missing_language_param(client: TestClient) -> None:
-    r = client.get("/v1/models/omnivoice/voices")
+    r = client.get("/v1/models/qwen3-tts-medium/voices")
     assert r.status_code == 422  # FastAPI validation error (Query required)
 
 
 # ------------------------------------------------------------------ load
 def test_load_model(client: TestClient) -> None:
-    r = client.post("/v1/models/omnivoice/load")
+    r = client.post("/v1/models/qwen3-tts-medium/load")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ready"
-    assert body["model"] == "omnivoice"
+    assert body["model"] == "qwen3-tts-medium"
 
 
 def test_load_model_not_found(client: TestClient) -> None:
@@ -97,14 +97,14 @@ def test_load_model_not_found(client: TestClient) -> None:
 # ------------------------------------------------------------------ speech
 def test_speech_returns_wav(client: TestClient) -> None:
     r = client.post("/v1/audio/speech", json={
-        "model": "omnivoice",
+        "model": "qwen3-tts-medium",
         "input": "hello",
         "language": "en",
         "voice": "English-Female-Alice",
     })
     assert r.status_code == 200
     assert r.headers["content-type"] == "audio/wav"
-    assert r.headers["x-openvox-model"] == "omnivoice"
+    assert r.headers["x-openvox-model"] == "qwen3-tts-medium"
     assert r.headers["x-openvox-voice"] == "English-Female-Alice"
     assert r.content[:4] == b"RIFF"
     assert r.content[8:12] == b"WAVE"
@@ -112,7 +112,7 @@ def test_speech_returns_wav(client: TestClient) -> None:
 
 def test_speech_default_voice(client: TestClient) -> None:
     r = client.post("/v1/audio/speech", json={
-        "model": "omnivoice",
+        "model": "qwen3-tts-medium",
         "input": "hello",
         "language": "en",
     })
@@ -122,7 +122,7 @@ def test_speech_default_voice(client: TestClient) -> None:
 
 def test_speech_voice_not_found_returns_400(client: TestClient) -> None:
     r = client.post("/v1/audio/speech", json={
-        "model": "omnivoice",
+        "model": "qwen3-tts-medium",
         "input": "hello",
         "language": "en",
         "voice": "nonexistent-voice",
@@ -145,7 +145,7 @@ def test_speech_model_not_found(client: TestClient) -> None:
 def test_speech_busy_returns_429(client: TestClient, monkeypatch) -> None:
     monkeypatch.setattr(registry.JOB_LOCK, "locked", lambda: True)
     r = client.post("/v1/audio/speech", json={
-        "model": "omnivoice",
+        "model": "qwen3-tts-medium",
         "input": "hello",
         "language": "en",
     })
@@ -156,7 +156,7 @@ def test_speech_busy_returns_429(client: TestClient, monkeypatch) -> None:
 # ------------------------------------------------------------------ streaming
 def test_speech_stream_sse_events(client: TestClient) -> None:
     r = client.post("/v1/audio/speech", json={
-        "model": "omnivoice",
+        "model": "qwen3-tts-medium",
         "input": "hello",
         "language": "en",
         "voice": "English-Female-Alice",
@@ -189,7 +189,7 @@ def test_speech_stream_audio_is_valid_wav(client: TestClient) -> None:
     import base64
 
     r = client.post("/v1/audio/speech", json={
-        "model": "omnivoice",
+        "model": "qwen3-tts-medium",
         "input": "hello",
         "language": "en",
         "stream": True,

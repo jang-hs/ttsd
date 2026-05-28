@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+models/
+voices/
+voice_catalog.json
+voices.manifest.jsonl
+.claude/*
+.DS_Store
+CLAUDE.md

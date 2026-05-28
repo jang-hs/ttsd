@@ -1,0 +1,19 @@
+# Direct dependencies. Install with `uv pip install -r requirements.txt`
+# (uv's resolver handles this set; plain pip backtracks badly on Python 3.13).
+mlx-audio==0.2.10
+hf_transfer==0.1.9
+transformers==4.57.6
+huggingface_hub
+soundfile
+numpy
+fastapi
+uvicorn[standard]
+
+# Only needed by `populate_voices.py fleurs` (skip if you don't use FLEURS).
+datasets
+
+# NOTE: PyPI mlx-audio 0.2.10 ships only a subset of TTS modules. setup.sh
+# overlays the full mlx_audio (omnivoice, qwen3_tts, chatterbox*, higgs_audio
+# codec, updated base/utils) from the OpenVox app bundle — same 0.2.10 version,
+# just with the upstream-pending modules included. All overlaid modules are
+# open-source (Apache-2.0, github.com/Blaizzy/mlx-audio).

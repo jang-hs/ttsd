@@ -52,9 +52,12 @@ class ChatterboxBackend:
 
     # ---- Extension metadata
     weights_dir = "chatterbox-pt"
+    # The current chatterbox-tts package loads via safetensors files (ve.safetensors,
+    # s3gen.safetensors, t3_cfg.safetensors). The HF repo also ships .pt variants, but
+    # ChatterboxTTS.from_local() hard-codes the safetensors filenames so we pull those.
     weights_repos: tuple = (
         ("ResembleAI/chatterbox", "chatterbox-pt",
-         ("ve.pt", "s3gen.pt", "t3_cfg.safetensors",
+         ("ve.safetensors", "s3gen.safetensors", "t3_cfg.safetensors",
           "tokenizer.json", "conds.pt")),
     )
     # chatterbox-tts pins transformers to a different version than qwen-tts;

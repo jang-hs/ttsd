@@ -7,6 +7,9 @@ same reference-clip pool.
 """
 from __future__ import annotations
 
+import contextlib
+import os
+import sys
 import threading
 
 import numpy as np
@@ -15,6 +18,51 @@ from .. import config, voices
 from .._device import pick_device, pick_dtype
 from ..voices import Catalog, Voice
 from ._common import resample_if_needed, to_mono_float32
+
+
+@contextlib.contextmanager
+def _silence_import_warnings():
+    """Silence noisy module-load output from qwen-tts' transitive deps.
+
+    qwen-tts pulls in the `sox` Python wrapper (which probes for the `sox`
+    binary on PATH at import and prints to stderr if missing) and emits a
+    flash-attn banner of its own. Neither matters here — qwen-tts uses
+    torchaudio/soundfile for audio I/O, and we pick a non-flash attention
+    implementation explicitly below.
+
+    Redirect at the OS file-descriptor level (not just sys.stdout/stderr) so
+    output from subprocess.* calls — like sox-py probing the sox binary —
+    also goes to /dev/null. Pure Python-level redirection misses those."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved_stdout_fd = os.dup(1)
+    saved_stderr_fd = os.dup(2)
+    try:
+        os.dup2(devnull_fd, 1)
+        os.dup2(devnull_fd, 2)
+        yield
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(saved_stdout_fd, 1)
+        os.dup2(saved_stderr_fd, 2)
+        os.close(saved_stdout_fd)
+        os.close(saved_stderr_fd)
+        os.close(devnull_fd)
+
+
+def _pick_attn_impl(device) -> str:
+    """flash_attention_2 is CUDA + flash-attn only. Fall back to sdpa
+    (PyTorch's native scaled-dot-product attention) on MPS / CPU / CUDA
+    without flash-attn so qwen-tts doesn't try to import the missing package."""
+    if device.type == "cuda":
+        try:
+            import flash_attn  # noqa: F401
+            return "flash_attention_2"
+        except ImportError:
+            pass
+    return "sdpa"
 
 # Qwen3-TTS-CustomVoice exposes 10 languages.
 SUPPORTED_LANGS = {"de", "en", "es", "fr", "it", "ja", "ko", "pt", "ru", "zh"}
@@ -103,7 +151,8 @@ class Qwen3TTSBackend:
         with self._lock:
             if self._model is not None:
                 return
-            from qwen_tts import Qwen3TTSModel
+            with _silence_import_warnings():
+                from qwen_tts import Qwen3TTSModel
 
             device = pick_device()
             dtype = pick_dtype()
@@ -119,6 +168,7 @@ class Qwen3TTSBackend:
                 source,
                 device_map=str(device),
                 dtype=dtype,
+                attn_implementation=_pick_attn_impl(device),
             )
 
     def synth(self, text: str, language: str, voice: Voice) -> np.ndarray:
